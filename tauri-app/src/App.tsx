@@ -1,8 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { ListItem, Paragraph, Text } from "mdast";
 import { Node, visit } from "unist-util-visit";
-import remarkGfm from "remark-gfm";
-import ReactMarkdown from "react-markdown";
 import Markdown from "markdown-to-jsx";
 import { unified, VFileWithOutput } from "unified";
 import remarkParse from "remark-parse";
@@ -12,18 +10,16 @@ import dayjs from "./lib/dayjs";
 import "./App.css";
 import "./index.css";
 
-const text = `* category A
-  * [ ] todo detail
-* [x] done
-`;
-
 type Task = {
   depth: number;
   text: string;
   checked: boolean;
+  checkedAt: string | null;
 };
 
-const tasks = (root: Node) => {
+var tasks: Task[] = JSON.parse(String(localStorage.getItem("taskList"))) || [];
+
+const getTasks = (root: Node) => {
   const items: Task[] = [];
 
   visit(root, "listItem", (node: ListItem) => {
@@ -41,15 +37,23 @@ const tasks = (root: Node) => {
     }
 
     const item: Task = {
-      checked,
       text: "",
       depth: paragraph.position?.start?.column || 0,
+      checked,
+      checkedAt: null,
     };
 
     if (checked) {
       item.text = text.value.replace("[x]", "").trim();
     } else {
       item.text = text.value.replace("[ ]", "").trim();
+    }
+
+    const checkedAt = tasks.find(
+      (v) => v.text.trim() === item.text.trim()
+    )?.checkedAt;
+    if (checkedAt) {
+      item.checkedAt = checkedAt;
     }
 
     items.push(item);
@@ -60,7 +64,7 @@ const tasks = (root: Node) => {
 
 function remarkTasks() {
   return (node: Node, file: VFileWithOutput<any>) => {
-    file.data.taskList = tasks(node);
+    file.data.taskList = getTasks(node);
   };
 }
 
@@ -71,17 +75,62 @@ const processor = unified()
 
 function App() {
   const [select, setSelect] = useState(0);
-  const [markdown, setMarkdown] = useState(text);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [markdown, setMarkdown] = useState(
+    localStorage.getItem("markdown") || ""
+  );
+
+  const [history, setHistory] = useState(
+    JSON.parse(String(localStorage.getItem("history"))) || []
+  );
+
+  const addHistoryValue = useCallback((tasks: Task[]) => {
+    const h = tasks.filter((v) => {
+      if (!v.checkedAt) {
+        return false;
+      }
+
+      return dayjs().diff(dayjs(v.checkedAt), "hour") > 12;
+    });
+
+    if (h.length === 0) {
+      return;
+    }
+
+    const items = [...(history ?? []), ...h];
+
+    setHistory(items);
+    localStorage.setItem("history", JSON.stringify(items));
+
+    const historyTextList = h.map((v) => v.text);
+
+    tasks = tasks.filter((v) => {
+      return !historyTextList.includes(v.text);
+    });
+    localStorage.setItem("taskList", JSON.stringify(tasks));
+
+    const m = markdown
+      .split("\n")
+      .filter((v) => {
+        const ng = historyTextList.find((t) => v.includes(t));
+
+        return !ng;
+      })
+      .join("\n");
+
+    setMarkdown(m);
+    localStorage.setItem("markdown", m);
+  }, []);
 
   const setValue = useCallback((value: string) => {
     setMarkdown(value);
+    localStorage.setItem("markdown", value);
+
     const file = processor.processSync(value);
     const ts = file.data.taskList as Task[];
+    localStorage.setItem("taskList", JSON.stringify(ts));
 
-    console.log(ts);
-
-    setTasks(ts ?? []);
+    tasks = ts;
+    addHistoryValue(tasks);
   }, []);
 
   useEffect(() => {
@@ -136,6 +185,19 @@ function App() {
                                 aria-labelledby="task item"
                                 readOnly={false}
                                 onChange={() => {
+                                  tasks = tasks.map((v) => {
+                                    if (v.text === taskText.trim()) {
+                                      // この時点ではチェックが入っていないので、チェックが入っているときはチェックが入った日時を記録する
+                                      if (!checked) {
+                                        v.checkedAt = dayjs().toString();
+                                      } else {
+                                        v.checkedAt = null;
+                                      }
+                                    }
+
+                                    return v;
+                                  });
+
                                   const m = markdown
                                     .split("\n")
                                     .map((v) => {
